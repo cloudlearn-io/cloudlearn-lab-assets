@@ -1,0 +1,291 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "artifactsLocation": {
+        "type": "string",
+        "defaultValue":"https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration_02-23-2022.zip"
+      },
+      "vmGalleryImageOffer": {
+        "type": "string",
+        "metadata": {
+          "description": "(Required when vmImageType = Gallery) Gallery image Offer."
+        }
+      },
+      "vmGalleryImagePublisher": {
+        "type": "string",
+        "metadata": {
+          "description": "(Required when vmImageType = Gallery) Gallery image Publisher."
+        }
+      },
+      "vmGalleryImageHasPlan": {
+        "type": "bool",
+        "metadata": {
+          "description": "Whether the VM image has a plan or not"
+        },
+        "defaultValue": false
+      },
+      "vmGalleryImageSKU": {
+        "type": "string",
+        "metadata": {
+          "description": "(Required when vmImageType = Gallery) Gallery image SKU."
+        },
+        "defaultValue": ""
+      },
+      "vmGalleryImageVersion": {
+        "type": "string",
+        "metadata": {
+          "description": "(Required when vmImageType = Gallery) Gallery image version."
+        },
+        "defaultValue": ""
+      },
+      "rdshPrefix": {
+        "type": "string",
+        "metadata": {
+          "description": "This prefix will be used in combination with the VM number to create the VM name. This value includes the dash, so if using “rdsh” as the prefix, VMs would be named “rdsh-0”, “rdsh-1”, etc. You should use a unique prefix to reduce name collisions in Active Directory."
+        },
+        "defaultValue": "[take(toLower(resourceGroup().name),10)]"
+      },
+      "rdshNumberOfInstances": {
+        "type": "int",
+        "metadata": {
+          "description": "Number of session hosts that will be created and added to the hostpool."
+        }
+      },
+      "rdshVMDiskType": {
+        "type": "string",
+        "allowedValues": [
+          "Premium_LRS",
+          "StandardSSD_LRS",
+          "Standard_LRS"
+        ],
+        "metadata": {
+          "description": "The VM disk type for the VM: HDD or SSD."
+        }
+      },
+      "rdshVmSize": {
+        "type": "string",
+        "metadata": {
+          "description": "The size of the session host VMs."
+        }
+      },
+      "administratorAccountUsername": {
+        "type": "string",
+        "metadata": {
+          "description": "The username for the domain admin."
+        }
+      },
+      "administratorAccountPassword": {
+        "type": "securestring",
+        "metadata": {
+          "description": "The password that corresponds to the existing domain username."
+        }
+      },
+      "vmAdministratorAccountUsername": {
+        "type": "string",
+        "metadata": {
+          "description": "A username to be used as the virtual machine administrator account. The vmAdministratorAccountUsername and  vmAdministratorAccountPassword parameters must both be provided. Otherwise, domain administrator credentials provided by administratorAccountUsername and administratorAccountPassword will be used."
+        }
+      },
+      "vmAdministratorAccountPassword": {
+        "type": "securestring",
+        "metadata": {
+          "description": "The password associated with the virtual machine administrator account. The vmAdministratorAccountUsername and  vmAdministratorAccountPassword parameters must both be provided. Otherwise, domain administrator credentials provided by administratorAccountUsername and administratorAccountPassword will be used."
+        }
+      },
+      "subnet-id": {
+        "type": "string",
+        "metadata": {
+          "description": "The unique id of the subnet for the nics."
+        }
+      },
+      "location": {
+        "type": "string"
+      },
+      "vmInitialNumber": {
+        "type": "int",
+        "metadata": {
+          "description": "VM name prefix initial number."
+        },
+        "defaultValue": 0
+      },
+      "_guidValue": {
+        "type": "string",
+        "defaultValue": "[newGuid()]"
+      },
+      "hostpoolToken": {
+        "type": "string",
+        "metadata": {
+          "description": "The token for adding VMs to the hostpool"
+        }
+      },
+      "hostpoolName": {
+        "type": "string",
+        "metadata": {
+          "description": "The name of the hostpool"
+        }
+      },
+      "ouPath": {
+        "type": "string",
+        "metadata": {
+          "description": "OUPath for the domain join"
+        },
+        "defaultValue": ""
+      },
+      "domain": {
+        "type": "string",
+        "metadata": {
+          "description": "Domain to join"
+        },
+        "defaultValue": ""
+      }
+    },
+    "variables": {
+      "domain": "[if(equals(parameters('domain'), ''), last(split(parameters('administratorAccountUsername'), '@')), parameters('domain'))]",
+      "storageAccountType": "[parameters('rdshVMDiskType')]",
+      "isVMAdminAccountCredentialsProvided": "[and(not(equals(parameters('vmAdministratorAccountUsername'), '')), not(equals(parameters('vmAdministratorAccountPassword'), '')))]",
+      "vmAdministratorUsername": "[if(variables('isVMAdminAccountCredentialsProvided'), parameters('vmAdministratorAccountUsername'), first(split(parameters('administratorAccountUsername'), '@')))]",
+      "vmAdministratorPassword": "[if(variables('isVMAdminAccountCredentialsProvided'), parameters('vmAdministratorAccountPassword'), parameters('administratorAccountPassword'))]",
+      "planInfoEmpty": "[or(empty(parameters('vmGalleryImageSKU')), empty(parameters('vmGalleryImagePublisher')), empty(parameters('vmGalleryImageOffer')))]",
+      "marketplacePlan": {
+        "name": "[parameters('vmGalleryImageSKU')]",
+        "publisher": "[parameters('vmGalleryImagePublisher')]",
+        "product": "[parameters('vmGalleryImageOffer')]"
+      },
+      "vmPlan": "[if(or(variables('planInfoEmpty'), not(parameters('vmGalleryImageHasPlan'))), json('null'), variables('marketplacePlan'))]",
+      "vmIdentityType": "SystemAssigned",
+      "vmIdentityTypeProperty": {
+        "type": "[variables('vmIdentityType')]"
+      },
+      "vmIdentity": "[variables('vmIdentityTypeProperty')]"
+    },
+    "resources": [
+      {
+        "apiVersion": "2018-11-01",
+        "type": "Microsoft.Network/networkInterfaces",
+        "name": "[concat(parameters('rdshPrefix'), add(copyindex(), parameters('vmInitialNumber')), '-nic')]",
+        "location": "[parameters('location')]",
+        "copy": {
+          "name": "rdsh-nic-loop",
+          "count": "[parameters('rdshNumberOfInstances')]"
+        },
+        "properties": {
+          "ipConfigurations": [
+            {
+              "name": "ipconfig",
+              "properties": {
+                "privateIPAllocationMethod": "Dynamic",
+                "subnet": {
+                  "id": "[parameters('subnet-id')]"
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "apiVersion": "2021-07-01",
+        "type": "Microsoft.Compute/virtualMachines",
+        "name": "[concat(parameters('rdshPrefix'), add(copyindex(), parameters('vmInitialNumber')))]",
+        "location": "[parameters('location')]",
+        "plan": "[variables('vmPlan')]",
+        "copy": {
+          "name": "rdsh-vm-loop",
+          "count": "[parameters('rdshNumberOfInstances')]"
+        },
+        "dependsOn": [
+          "[concat('Microsoft.Network/networkInterfaces/', parameters('rdshPrefix'), add(copyindex(), parameters('vmInitialNumber')), '-nic')]"
+        ],
+        "identity": "[variables('vmIdentity')]",
+        "properties": {
+          "hardwareProfile": {
+            "vmSize": "[parameters('rdshVmSize')]"
+          },
+          "osProfile": {
+            "computerName": "[concat(parameters('rdshPrefix'), add(copyindex(), parameters('vmInitialNumber')))]",
+            "adminUsername": "[variables('vmAdministratorUsername')]",
+            "adminPassword": "[variables('vmAdministratorPassword')]"
+          },
+          "storageProfile": {
+            "imageReference": {
+              "publisher": "[parameters('vmGalleryImagePublisher')]",
+              "offer": "[parameters('vmGalleryImageOffer')]",
+              "sku": "[parameters('vmGalleryImageSKU')]",
+              "version": "[if(empty(parameters('vmGalleryImageVersion')), 'latest', parameters('vmGalleryImageVersion'))]"
+            },
+            "osDisk": {
+              "createOption": "FromImage",
+              "diskSizeGB": "[json('null')]",
+              "managedDisk": {
+                "storageAccountType": "[variables('storageAccountType')]"
+              }
+            }
+          },
+          "networkProfile": {
+            "networkInterfaces": [
+              {
+                "id": "[resourceId('Microsoft.Network/networkInterfaces',concat(parameters('rdshPrefix'), add(copyindex(), parameters('vmInitialNumber')), '-nic'))]"
+              }
+            ]
+          },
+          "licenseType": "Windows_Client"
+        }
+      },
+      {
+        "apiVersion": "2018-10-01",
+        "type": "Microsoft.Compute/virtualMachines/extensions",
+        "name": "[concat(parameters('rdshPrefix'), add(copyindex(), parameters('vmInitialNumber')), '/', 'Microsoft.PowerShell.DSC')]",
+        "location": "[parameters('location')]",
+        "dependsOn": [
+          "rdsh-vm-loop"
+        ],
+        "copy": {
+          "name": "rdsh-dsc-loop",
+          "count": "[parameters('rdshNumberOfInstances')]"
+        },
+        "properties": {
+          "publisher": "Microsoft.Powershell",
+          "type": "DSC",
+          "typeHandlerVersion": "2.73",
+          "autoUpgradeMinorVersion": true,
+          "settings": {
+            "modulesUrl": "[parameters('artifactsLocation')]",
+            "configurationFunction": "Configuration.ps1\\AddSessionHost",
+            "properties": {
+              "hostPoolName": "[parameters('hostpoolName')]",
+              "registrationInfoToken": "[parameters('hostpoolToken')]"
+              }
+          }
+        }
+      },
+      {
+        "apiVersion": "2018-10-01",
+        "type": "Microsoft.Compute/virtualMachines/extensions",
+        "name": "[concat(parameters('rdshPrefix'), add(copyindex(), parameters('vmInitialNumber')), '/', 'joindomain')]",
+        "location": "[parameters('location')]",
+        "dependsOn": [
+          "rdsh-dsc-loop"
+        ],
+        "copy": {
+          "name": "rdsh-domain-join-loop",
+          "count": "[parameters('rdshNumberOfInstances')]"
+        },
+        "properties": {
+          "publisher": "Microsoft.Compute",
+          "type": "JsonADDomainExtension",
+          "typeHandlerVersion": "1.3",
+          "autoUpgradeMinorVersion": true,
+          "settings": {
+            "name": "[variables('domain')]",
+            "ouPath": "[parameters('ouPath')]",
+            "user": "[parameters('administratorAccountUsername')]",
+            "restart": "true",
+            "options": "3"
+          },
+          "protectedSettings": {
+            "password": "[parameters('administratorAccountPassword')]"
+          }
+        }
+      }
+    ]
+  }
